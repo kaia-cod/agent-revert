@@ -52,13 +52,14 @@ See the full reproducible demo: [`examples/demo.sh`](examples/demo.sh)
 ## Usage
 
 ```
-agent-revert [--path DIR] [--store DIR] <command>
+agent-revert [--path DIR] [--store DIR] [--max-snapshots N] <command>
 
 snapshot [--label TEXT]        take a snapshot of DIR
-timeline                       list all snapshots
+timeline                       list all snapshots (pinned ones are marked)
 status [--json]                what changed since the latest snapshot?
 revert [--snapshot ID] [--dry-run]
                                restore DIR to a snapshot (default: latest)
+pin <ID> / unpin <ID>          protect (or release) a snapshot from pruning
 patch [--snapshot ID]          export a unified diff vs a snapshot
 ```
 
@@ -68,6 +69,11 @@ patch [--snapshot ID]          export a unified diff vs a snapshot
   `--store ~/.agent-revert/myproject`. The store is content-addressed
   (`blobs/<sha256>` + `snapshots/<id>.json`), so unchanged files cost nothing
   across snapshots.
+- `--max-snapshots` sets the retention limit (default: 5). When the limit is
+  exceeded, the **oldest unpinned** snapshots are pruned (the CLI prints what
+  was pruned); `--max-snapshots 0` disables pruning entirely.
+- **Pinned snapshots are exempt from the limit** and never pruned — pin a
+  "known good" state before long agent sessions: `agent-revert pin <ID>`.
 - Ignored by default: `.git`, `__pycache__`, `.venv`, `venv`, `.mypy_cache`,
   `.pytest_cache`, `node_modules`.
 
@@ -105,7 +111,10 @@ agent_revert/
   cli.py          argparse CLI (snapshot, timeline, status, revert, patch)
   __main__.py     python -m agent_revert entry point
 tests/
-  test_store.py   pytest: snapshot→break→dry-run→revert, dedup, empty tree, patch
+  test_store.py         pytest: snapshot→break→dry-run→revert, dedup, empty tree, patch
+  test_cli.py           end-to-end CLI tests (full cycle, retention flag, pin/unpin)
+  test_store_location.py default store placement (out of tree)
+  test_pin_retention.py pin/unpin + retention pruning behavior
 examples/
   demo.sh         60-second reproducible demo
 ```
@@ -119,6 +128,8 @@ Design principles:
    item, never a requirement.
 4. **Safe by default** — `revert --dry-run` previews exactly what will change;
    symlinks/devices/sockets are never followed or tracked.
+5. **Bounded retention, explicit escape hatch** — the store keeps the newest
+   N snapshots (default 5) and prunes transparently; pin what you want kept.
 
 ## Why not ... ?
 

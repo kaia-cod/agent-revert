@@ -69,6 +69,7 @@ class Store:
         self.max_snapshots = int(max_snapshots)
         self.blobs = self.path / "blobs"
         self.snaps = self.path / "snapshots"
+        self.last_pruned: list[str] = []  # ids dropped by the most recent prune
         self.blobs.mkdir(parents=True, exist_ok=True)
         self.snaps.mkdir(parents=True, exist_ok=True)
 
@@ -124,13 +125,21 @@ class Store:
         return snap
 
     def _prune(self) -> list[str]:
-        """Keep only the newest ``max_snapshots`` snapshots; drop stale blobs."""
+        """Keep the newest ``max_snapshots`` unpinned snapshots; drop stale blobs.
+
+        Pinned snapshots (``"pinned": true`` in their manifest) are exempt:
+        they never count against the limit and are never dropped. Returns
+        the ids of pruned snapshots.
+        """
+        self.last_pruned = []
         if self.max_snapshots <= 0:
             return []
         snaps = self.list_snapshots()
-        if len(snaps) <= self.max_snapshots:
+        unpinned = [s for s in snaps if not s.get("pinned")]
+        excess = len(unpinned) - self.max_snapshots
+        if excess <= 0:
             return []
-        keep, drop = snaps[-self.max_snapshots:], snaps[: -self.max_snapshots]
+        drop = unpinned[:excess]  # oldest unpinned first
         dropped = []
         for s in drop:
             f = self.snaps / f"{s['id']}.json"
@@ -139,14 +148,34 @@ class Store:
                 dropped.append(s["id"])
             except OSError:
                 pass
-        referenced = {d for s in keep for d in s.get("files", {}).values()}
+        kept_ids = {s["id"] for s in snaps} - set(dropped)
+        referenced = {d for s in snaps if s["id"] in kept_ids for d in s.get("files", {}).values()}
         for blob in self.blobs.iterdir():
             if blob.is_file() and blob.name not in referenced:
                 try:
                     blob.unlink()
                 except OSError:
                     pass
+        self.last_pruned = dropped
         return dropped
+
+    # -- pinning --------------------------------------------------------
+    def pin(self, snap_id: str, pinned: bool = True) -> dict:
+        """Mark a snapshot as pinned (``pinned=False`` to unpin).
+
+        Pinned snapshots are protected from retention pruning, so a
+        "known good" state survives unbounded agent runs.
+        """
+        snap = self.get(snap_id)
+        if bool(snap.get("pinned", False)) == pinned:
+            return snap
+        snap["pinned"] = pinned
+        (self.snaps / f"{snap['id']}.json").write_text(json.dumps(snap, indent=2, sort_keys=True))
+        return snap
+
+    def unpin(self, snap_id: str) -> dict:
+        """Convenience wrapper for ``pin(snap_id, pinned=False)``."""
+        return self.pin(snap_id, pinned=False)
 
     # -- listing --------------------------------------------------------
     def list_snapshots(self) -> list[dict]:
